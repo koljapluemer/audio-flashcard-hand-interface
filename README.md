@@ -108,7 +108,13 @@ GPIO 1 / 2 / 3 and GND (internal pull-ups).
 
 BLE contract matches the Cordova app (`code/basic_cordo_android_app`): service
 `4fafc201-…`, notify characteristic `beb5483e-…`, one `"Button N Pressed"`
-string per press. The app uses buttons 1 and 2; button 3 is sent but ignored.
+string per press (N = GPIO number). Physical layout, top to bottom:
+
+| Position | GPIO | Message | Before reveal | After reveal |
+|---|---|---|---|---|
+| top    | 2 | `Button 2 Pressed` | reveal (play English) | got it (+) |
+| middle | 3 | `Button 3 Pressed` | — | didn't get it (−) |
+| bottom | 1 | `Button 1 Pressed` | repeat Italian | repeat English |
 
 - Onboard LED: blue blink = advertising, green blink = connected, white flash = press.
 - Deep sleep after 5 min with no connection and no presses (`IDLE_SLEEP_MS`);

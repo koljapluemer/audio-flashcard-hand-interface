@@ -18,6 +18,34 @@
         border: 1px solid #ddd;
         font-family: monospace;
       }
+      #controls {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.8em;
+        margin: 1em 0;
+      }
+      .ctrl {
+        width: 7.5em;
+        height: 7.5em;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        font-size: 1em;
+        font-weight: bold;
+        color: white;
+        border: 3px solid rgba(0,0,0,0.25);
+        transition: transform 0.08s, opacity 0.2s, filter 0.08s;
+        user-select: none;
+      }
+      .ctrl small { display: block; font-weight: normal; opacity: 0.8; }
+      #ctrlTop    { background: #2e8b57; }
+      #ctrlMiddle { background: #c0392b; }
+      #ctrlBottom { background: #2c6fbb; }
+      .ctrl.inactive { opacity: 0.3; }
+      .ctrl.pressed { transform: scale(0.9); filter: brightness(1.4); }
       #stats {
         margin-top: 1em;
         padding: 1em;
@@ -30,6 +58,11 @@
     <h1>Italian Sentences</h1>
     <button onclick="scanAndConnect()">Scan & Connect</button>
     <button onclick="downloadButtonLogs()">Download Button Logs</button>
+    <div id="controls">
+      <div class="ctrl" id="ctrlTop"    onclick="handleButtonPress(BTN.TOP)"></div>
+      <div class="ctrl" id="ctrlMiddle" onclick="handleButtonPress(BTN.MIDDLE)"></div>
+      <div class="ctrl" id="ctrlBottom" onclick="handleButtonPress(BTN.BOTTOM)"></div>
+    </div>
     <div id="currentSentence">No sentence selected</div>
     <div id="currentWord">&nbsp;</div>
     <div id="output">No data yet.</div>
@@ -42,9 +75,22 @@
       const DATA_DIR = 'learning_data/it';  // built by build_italian_data.py
       const DEBOUNCE_TIME = 100;
 
-      // Button 1 / Button 2 meaning per state:
-      //   PLAYING_IT / IT_DONE : 1 = repeat Italian, 2 = play English
-      //   WAITING_RATING       : 1 = got it,         2 = didn't get it
+      // Physical buttons on the ESP32-S3-Zero remote (008_esp_s3_zero_ble_buttons).
+      // The firmware sends "Button N Pressed" with N = index in its pin list
+      // {GPIO1, GPIO2, GPIO3} + 1, so the GPIO number equals N.
+      //   top    = GPIO2 -> "Button 2 Pressed"
+      //   middle = GPIO3 -> "Button 3 Pressed"
+      //   bottom = GPIO1 -> "Button 1 Pressed"
+      const BTN = {
+        TOP: 'Button 2 Pressed',
+        MIDDLE: 'Button 3 Pressed',
+        BOTTOM: 'Button 1 Pressed'
+      };
+
+      // Meaning per state:
+      //   PLAYING_IT / IT_DONE : top = reveal (play English), middle = -,          bottom = repeat Italian
+      //   WAITING_RATING       : top = got it,                middle = didn't get it, bottom = repeat English
+      //   IDLE                 : any = start
       //   PLAYING_FEEDBACK     : ignored
       const State = {
         IDLE: 'IDLE',
@@ -57,6 +103,41 @@
       let sentences = null;     // [{id, it, en}]
       let current = null;       // the sentence being practised
       let currentState = State.IDLE;
+      function setState(s) {
+        currentState = s;
+        renderControls();
+      }
+
+      const CONTROL_LABELS = {
+        //                        top              middle             bottom
+        [State.IDLE]:             [['Start', ''],    ['Start', ''],     ['Start', '']],
+        [State.PLAYING_IT]:       [['Reveal', ''],   ['—', ''],         ['Repeat', 'Italian']],
+        [State.IT_DONE]:          [['Reveal', ''],   ['—', ''],         ['Repeat', 'Italian']],
+        [State.WAITING_RATING]:   [['Got it', '+'],  ['Missed', '−'],   ['Repeat', 'English']],
+        [State.PLAYING_FEEDBACK]: [['…', ''],        ['…', ''],         ['…', '']]
+      };
+      const CONTROL_IDS = ['ctrlTop', 'ctrlMiddle', 'ctrlBottom'];
+
+      function renderControls() {
+        const labels = CONTROL_LABELS[currentState];
+        CONTROL_IDS.forEach((id, i) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          const [main, sub] = labels[i];
+          el.innerHTML = main + (sub ? `<small>${sub}</small>` : '');
+          el.classList.toggle('inactive', main === '—' || main === '…');
+        });
+      }
+
+      function flashControl(message) {
+        const id = { [BTN.TOP]: 'ctrlTop', [BTN.MIDDLE]: 'ctrlMiddle', [BTN.BOTTOM]: 'ctrlBottom' }[message];
+        const el = id && document.getElementById(id);
+        if (!el) return;
+        el.classList.add('pressed');
+        setTimeout(() => el.classList.remove('pressed'), 150);
+      }
+
+      document.addEventListener('DOMContentLoaded', renderControls);
       let currentAudio = null;
       let lastPlayTime = 0;
       let isProcessingButton = false;
@@ -224,7 +305,7 @@
             addLog('Error playing ' + path + ' - ' + error.message);
             if (++failedPlays >= 3) {
               log('Audio keeps failing; press a button to retry');
-              currentState = State.IDLE;
+              setState(State.IDLE);
               failedPlays = 0;
               return;
             }
@@ -233,15 +314,15 @@
       }
 
       function playItalian() {
-        currentState = State.PLAYING_IT;
+        setState(State.PLAYING_IT);
         playAudio(`${DATA_DIR}/audio/${current.id}_it.mp3`, () => {
-          currentState = State.IT_DONE;
+          setState(State.IT_DONE);
         });
       }
 
       function playEnglish() {
         document.getElementById('currentWord').innerText = current.en;
-        currentState = State.WAITING_RATING;
+        setState(State.WAITING_RATING);
         playAudio(`${DATA_DIR}/audio/${current.id}_en.mp3`, () => {});
       }
 
@@ -252,14 +333,15 @@
         }
         logButtonPress(`Sentence ${current.id} rated as ${isCorrect ? 'correct' : 'incorrect'}`);
         if (isCorrect) recordLearnedSentence(current.id);
-        currentState = State.PLAYING_FEEDBACK;
+        setState(State.PLAYING_FEEDBACK);
         playFeedbackTone(isCorrect, selectNewRandomSentence);
       }
 
       function handleButtonPress(message) {
-        if (message !== 'Button 1 Pressed' && message !== 'Button 2 Pressed') return;
-        const isButton1 = message === 'Button 1 Pressed';
-        addLog(`${message}, state: ${currentState}`);
+        if (message !== BTN.TOP && message !== BTN.MIDDLE && message !== BTN.BOTTOM) return;
+        const which = message === BTN.TOP ? 'top' : message === BTN.MIDDLE ? 'middle' : 'bottom';
+        addLog(`${message} (${which}), state: ${currentState}`);
+        flashControl(message);
 
         if (isProcessingButton) {
           addLog('Ignoring button press - still processing previous press');
@@ -275,16 +357,22 @@
         switch (currentState) {
           case State.PLAYING_IT:
           case State.IT_DONE:
-            if (isButton1) {
-              logButtonPress(`Sentence ${current.id} repeated in Italian`);
-              playItalian();
-            } else {
+            if (which === 'top') {
               logButtonPress(`Sentence ${current.id} played in English`);
               playEnglish();
+            } else if (which === 'bottom') {
+              logButtonPress(`Sentence ${current.id} repeated in Italian`);
+              playItalian();
             }
+            // middle: nothing to rate before the reveal
             break;
           case State.WAITING_RATING:
-            handleRating(isButton1);
+            if (which === 'top') handleRating(true);
+            else if (which === 'middle') handleRating(false);
+            else {
+              logButtonPress(`Sentence ${current.id} repeated in English`);
+              playEnglish();
+            }
             break;
           case State.IDLE:
             selectNewRandomSentence();

@@ -18,8 +18,9 @@
  *   Service        : 4fafc201-1fb5-459e-8fcc-c5c9c331914b  (the app scans for this)
  *   Characteristic : beb5483e-36e1-4688-b7f5-ea07361b26a8  notify, device -> app
  *   Each confirmed press notifies the plain string "Button N Pressed"
- *   (N = 1..3, no newline). The app currently reacts to buttons 1 and 2 and
- *   ignores 3.
+ *   (N = 1..3 = GPIO number, no newline). On the finger the buttons sit as
+ *   top = GPIO2 (reveal / got it), middle = GPIO3 (didn't get it),
+ *   bottom = GPIO1 (repeat current sentence).
  *
  * Battery-related behaviour:
  *   - CPU at 80 MHz (plenty for BLE + 3 GPIOs).
