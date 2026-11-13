@@ -97,3 +97,24 @@ skipped on load; clear them with the sync page's Delete-all and re-import.
 Icons live in `code/scripts/007_esp_s3_touch_flashcard_ble/icons/`; after
 changing a PNG run `python3 icons/gen_icons.py` in that folder (needs Pillow)
 to regenerate `icons.h`.
+
+---
+
+## Internal: `code/scripts/008_esp_s3_zero_ble_buttons` — 3-button BLE remote (ESP32-S3-Zero)
+
+Port of `004_esp_c3_ble_buttons` to a Waveshare ESP32-S3-Zero powered by a LiPo
+through a 5 V battery shield (shield OUT+ → 5V, OUT− → GND). Buttons go between
+GPIO 1 / 2 / 3 and GND (internal pull-ups).
+
+BLE contract matches the Cordova app (`code/basic_cordo_android_app`): service
+`4fafc201-…`, notify characteristic `beb5483e-…`, one `"Button N Pressed"`
+string per press. The app uses buttons 1 and 2; button 3 is sent but ignored.
+
+- Onboard LED: blue blink = advertising, green blink = connected, white flash = press.
+- Deep sleep after 5 min with no connection and no presses (`IDLE_SLEEP_MS`);
+  any button wakes it.
+
+```
+arduino-cli compile --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc" code/scripts/008_esp_s3_zero_ble_buttons
+arduino-cli upload  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc" --port /dev/ttyACM0 code/scripts/008_esp_s3_zero_ble_buttons
+```
