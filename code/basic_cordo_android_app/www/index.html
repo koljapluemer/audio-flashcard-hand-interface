@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>BLE Button Reader</title>
+    <title>Italian Sentences</title>
     <script src="cordova.js"></script>
     <style>
       body { font-family: sans-serif; padding: 2em; }
@@ -27,11 +27,11 @@
     </style>
   </head>
   <body>
-    <h1>ESP32 Button Reader</h1>
+    <h1>Italian Sentences</h1>
     <button onclick="scanAndConnect()">Scan & Connect</button>
     <button onclick="downloadButtonLogs()">Download Button Logs</button>
     <div id="currentSentence">No sentence selected</div>
-    <div id="currentWord">No word selected</div>
+    <div id="currentWord">&nbsp;</div>
     <div id="output">No data yet.</div>
     <div id="stats">No learning stats yet</div>
     <div id="logArea"></div>
@@ -39,32 +39,29 @@
     <script>
       const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
       const CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
-      let sentences = null;
-      let currentAudio = null;
-      let feedbackAudio = null;
-      let isPlaying = false;
-      let lastPlayTime = 0;
-      const DEBOUNCE_TIME = 100; // Reduced to 100ms for faster response
+      const DATA_DIR = 'learning_data/it';  // built by build_italian_data.py
+      const DEBOUNCE_TIME = 100;
 
-      // State machine states
+      // Button 1 / Button 2 meaning per state:
+      //   PLAYING_IT / IT_DONE : 1 = repeat Italian, 2 = play English
+      //   WAITING_RATING       : 1 = got it,         2 = didn't get it
+      //   PLAYING_FEEDBACK     : ignored
       const State = {
-        WAITING_FOR_BUTTON: 'WAITING_FOR_BUTTON',
-        PLAYING_AR_WORD: 'PLAYING_AR_WORD',
-        PLAYING_EN_WORD: 'PLAYING_EN_WORD',
-        WAITING_WORD_RATING: 'WAITING_WORD_RATING',
-        PLAYING_WORD_FEEDBACK: 'PLAYING_WORD_FEEDBACK',
-        PLAYING_AR_SENTENCE: 'PLAYING_AR_SENTENCE',
-        PLAYING_EN_SENTENCE: 'PLAYING_EN_SENTENCE',
-        WAITING_SENTENCE_RATING: 'WAITING_SENTENCE_RATING',
-        PLAYING_SENTENCE_FEEDBACK: 'PLAYING_SENTENCE_FEEDBACK'
+        IDLE: 'IDLE',
+        PLAYING_IT: 'PLAYING_IT',
+        IT_DONE: 'IT_DONE',
+        WAITING_RATING: 'WAITING_RATING',  // English playing or finished
+        PLAYING_FEEDBACK: 'PLAYING_FEEDBACK'
       };
 
-      let currentState = State.WAITING_FOR_BUTTON;
-      let lastPlayedState = null;  // Track what was last played
-      let currentSentenceKey = null;
-      let currentWords = [];
-      let currentWordIndex = 0;
-      let isProcessingButton = false;  // Prevent double-processing of button presses
+      let sentences = null;     // [{id, it, en}]
+      let current = null;       // the sentence being practised
+      let currentState = State.IDLE;
+      let currentAudio = null;
+      let lastPlayTime = 0;
+      let isProcessingButton = false;
+      let audioCtx = null;
+      let failedPlays = 0;      // consecutive playback failures
 
       // Learning data storage
       const STORAGE_KEY = 'learned_sentences';
@@ -72,53 +69,36 @@
       let learnedSentences = [];
       let buttonPressLogs = [];
 
-      // Load button press logs from storage
       function loadButtonLogs() {
         const stored = localStorage.getItem(BUTTON_LOGS_KEY);
-        if (stored) {
-          buttonPressLogs = JSON.parse(stored);
-        }
+        if (stored) buttonPressLogs = JSON.parse(stored);
       }
 
-      // Save button press logs to storage
       function saveButtonLogs() {
         localStorage.setItem(BUTTON_LOGS_KEY, JSON.stringify(buttonPressLogs));
       }
 
-      // Add a button press log entry
       function logButtonPress(context) {
-        buttonPressLogs.push({
-          timestamp: new Date().toISOString(),
-          context: context
-        });
+        buttonPressLogs.push({ timestamp: new Date().toISOString(), context: context });
         saveButtonLogs();
       }
 
       // Download button press logs as JSON
       function downloadButtonLogs() {
         addLog('Preparing to share button logs...');
-        
-        // Create the JSON string
         const dataStr = JSON.stringify(buttonPressLogs, null, 2);
         const fileName = `button_press_logs_${new Date().toISOString().split('T')[0]}.json`;
-        
+
         if (window.cordova && window.plugins && window.plugins.socialsharing) {
-          // Share directly as text
           window.plugins.socialsharing.share(
-            dataStr, // The actual content
-            fileName, // Subject/title
-            null, // Image
-            null, // URL
-            function() {
-              addLog('Logs shared successfully');
-            },
-            function(error) {
+            dataStr, fileName, null, null,
+            () => addLog('Logs shared successfully'),
+            error => {
               addLog('Error sharing logs: ' + JSON.stringify(error));
               alert('Failed to share logs: ' + JSON.stringify(error));
             }
           );
         } else {
-          // Web fallback
           const blob = new Blob([dataStr], { type: 'text/plain' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
@@ -131,70 +111,50 @@
         }
       }
 
-      // Load learning data from storage
       function loadLearningData() {
         const stored = localStorage.getItem(STORAGE_KEY);
-        if (stored) {
-          learnedSentences = JSON.parse(stored);
-          updateStatsDisplay();
-        }
+        if (stored) learnedSentences = JSON.parse(stored);
+        updateStatsDisplay();
       }
 
-      // Save learning data to storage
       function saveLearningData() {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(learnedSentences));
       }
 
-      // Record a learned sentence
       function recordLearnedSentence(sentenceKey) {
-        const now = new Date().toISOString();
-        learnedSentences.push({
-          sentenceKey: sentenceKey,
-          timestamp: now
-        });
+        learnedSentences.push({ sentenceKey: sentenceKey, timestamp: new Date().toISOString() });
         saveLearningData();
         updateStatsDisplay();
       }
 
-      // Update the stats display
       function updateStatsDisplay() {
-        const statsDiv = document.getElementById('stats');
-        const totalLearned = learnedSentences.length;
         const today = new Date().toISOString().split('T')[0];
-        const learnedToday = learnedSentences.filter(s => 
-          s.timestamp.startsWith(today)
-        ).length;
-
-        statsDiv.innerHTML = `
+        const learnedToday = learnedSentences.filter(s => s.timestamp.startsWith(today)).length;
+        const last = learnedSentences[learnedSentences.length - 1];
+        document.getElementById('stats').innerHTML = `
           <h3>Learning Statistics</h3>
-          <p>Total sentences learned: ${totalLearned}</p>
+          <p>Total sentences learned: ${learnedSentences.length}</p>
           <p>Sentences learned today: ${learnedToday}</p>
-          <p>Last learned: ${learnedSentences.length > 0 ? new Date(learnedSentences[learnedSentences.length - 1].timestamp).toLocaleString() : 'Never'}</p>
+          <p>Last learned: ${last ? new Date(last.timestamp).toLocaleString() : 'Never'}</p>
         `;
       }
 
-      // Load sentences.json
-      fetch('learning_data/sentences.json')
+      fetch(`${DATA_DIR}/sentences.json`)
         .then(response => response.json())
         .then(data => {
           sentences = data;
-          addLog('Sentences loaded successfully');
-          loadLearningData(); // Load learning data after sentences are loaded
-          loadButtonLogs(); // Load button press logs
+          addLog(`Loaded ${sentences.length} Italian sentences`);
+          loadLearningData();
+          loadButtonLogs();
         })
-        .catch(error => {
-          addLog('Error loading sentences: ' + error);
-        });
+        .catch(error => addLog('Error loading sentences: ' + error));
 
       function addLog(text) {
         const logArea = document.getElementById('logArea');
-        const timestamp = new Date().toLocaleTimeString();
         const logEntry = document.createElement('div');
-        logEntry.textContent = `[${timestamp}] ${text}`;
+        logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
         logArea.insertBefore(logEntry, logArea.firstChild);
-        while (logArea.children.length > 50) {
-          logArea.removeChild(logArea.lastChild);
-        }
+        while (logArea.children.length > 50) logArea.removeChild(logArea.lastChild);
       }
 
       function log(text) {
@@ -204,244 +164,132 @@
       }
 
       function selectNewRandomSentence() {
-        if (!sentences) {
+        if (!sentences || sentences.length === 0) {
           log('Sentences not loaded yet');
           return;
         }
+        let next;
+        do {
+          next = sentences[Math.floor(Math.random() * sentences.length)];
+        } while (sentences.length > 1 && current && next.id === current.id);
+        current = next;
 
-        const keys = Object.keys(sentences);
-        currentSentenceKey = keys[Math.floor(Math.random() * keys.length)];
-        currentWords = [...sentences[currentSentenceKey]];
-        
-        // Shuffle the words
-        for (let i = currentWords.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [currentWords[i], currentWords[j]] = [currentWords[j], currentWords[i]];
-        }
-
-        currentWordIndex = 0;
-        const sentence = currentWords.join(' ');
-        document.getElementById('currentSentence').innerText = sentence;
-        log('Selected new sentence: ' + sentence);
-        
-        // Start with first word
-        playCurrentWordArabic();
+        document.getElementById('currentSentence').innerText = current.it;
+        document.getElementById('currentWord').innerHTML = '&nbsp;';
+        log('Selected sentence ' + current.id);
+        playItalian();
       }
 
-      // Function to play feedback sound
-      function playFeedbackSound(isCorrect) {
-        if (feedbackAudio) {
-          feedbackAudio.pause();
-          feedbackAudio = null;
+      // Short sine tones instead of feedback audio files: rising = right,
+      // low = wrong. Calls onDone when finished.
+      function playFeedbackTone(isCorrect, onDone) {
+        try {
+          audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+          const notes = isCorrect ? [660, 880] : [220];
+          const len = isCorrect ? 0.12 : 0.3;
+          const t0 = audioCtx.currentTime;
+          notes.forEach((freq, i) => {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0.25, t0 + i * len);
+            gain.gain.exponentialRampToValueAtTime(0.001, t0 + (i + 1) * len);
+            osc.connect(gain).connect(audioCtx.destination);
+            osc.start(t0 + i * len);
+            osc.stop(t0 + (i + 1) * len);
+          });
+          setTimeout(onDone, notes.length * len * 1000 + 150);
+        } catch (e) {
+          addLog('Feedback tone failed: ' + e.message);
+          onDone();
         }
-        
-        const soundPath = isCorrect ? 
-          'learning_data/audio/feedback/right.wav' : 
-          'learning_data/audio/feedback/wrong.mp3';
-        
-        feedbackAudio = new Audio(soundPath);
-        feedbackAudio.play().catch(error => {
-          addLog('Error playing feedback sound: ' + error.message);
-        });
       }
 
-      // Function to play audio with feedback
-      function playAudio(path, isCorrect = null) {
-        // Stop any currently playing audio
+      // onEnded runs when the clip finishes naturally (not when interrupted).
+      function playAudio(path, onEnded) {
         if (currentAudio) {
+          currentAudio.onended = null;
           currentAudio.pause();
-          currentAudio = null;
         }
-        if (feedbackAudio) {
-          feedbackAudio.pause();
-          feedbackAudio = null;
-        }
-
-        // Check if audio file exists
-        fetch(path, { method: 'HEAD' })
-          .then(response => {
-            if (!response.ok) {
-              throw new Error('Audio file not found');
-            }
-            log('Playing: ' + path);
-            currentAudio = new Audio(path);
-            return currentAudio.play();
-          })
-          .then(() => {
-            lastPlayTime = Date.now();
-            isPlaying = true;
-            currentAudio.onended = () => {
-              isPlaying = false;
-              // Don't reset state to WAITING_FOR_BUTTON if we're in a rating or feedback state
-              if (currentState !== State.WAITING_WORD_RATING && 
-                  currentState !== State.WAITING_SENTENCE_RATING &&
-                  currentState !== State.PLAYING_WORD_FEEDBACK &&
-                  currentState !== State.PLAYING_SENTENCE_FEEDBACK) {
-                currentState = State.WAITING_FOR_BUTTON;
-              }
-              log('Audio finished playing');
-              addLog(`Audio finished, current state: ${currentState}`);
-            };
-          })
+        log('Playing: ' + path);
+        const audio = new Audio(path);
+        currentAudio = audio;
+        audio.onended = () => {
+          if (currentAudio === audio) onEnded();
+        };
+        audio.play()
+          .then(() => { lastPlayTime = Date.now(); failedPlays = 0; })
           .catch(error => {
-            addLog('Error playing audio: ' + path + ' - ' + error.message);
-            isPlaying = false;
-            currentState = State.WAITING_FOR_BUTTON;
-            // Move to next word/sentence if audio file not found
-            if (currentWordIndex < currentWords.length) {
-              currentWordIndex++;
-              playCurrentWordArabic();
-            } else {
-              selectNewRandomSentence();
+            if (currentAudio !== audio) return;  // superseded, not a failure
+            addLog('Error playing ' + path + ' - ' + error.message);
+            if (++failedPlays >= 3) {
+              log('Audio keeps failing; press a button to retry');
+              currentState = State.IDLE;
+              failedPlays = 0;
+              return;
             }
+            selectNewRandomSentence();
           });
       }
 
-      function playCurrentWordArabic() {
-        if (currentWordIndex >= currentWords.length) {
-          // We're done with words, play the full sentence
-          playFullSentenceArabic();
-          return;
-        }
-
-        const word = currentWords[currentWordIndex];
-        document.getElementById('currentWord').innerText = word;
-        playAudio(`learning_data/audio/words/ar/${word}.mp3`);
-        currentState = State.PLAYING_AR_WORD;
-        lastPlayedState = State.PLAYING_AR_WORD;
+      function playItalian() {
+        currentState = State.PLAYING_IT;
+        playAudio(`${DATA_DIR}/audio/${current.id}_it.mp3`, () => {
+          currentState = State.IT_DONE;
+        });
       }
 
-      function playCurrentWordEnglish() {
-        const word = currentWords[currentWordIndex];
-        playAudio(`learning_data/audio/words/en/${word}.mp3`);
-        currentState = State.PLAYING_EN_WORD;
-        lastPlayedState = State.PLAYING_EN_WORD;
-        addLog(`State changed to PLAYING_EN_WORD for word "${word}"`);
-      }
-
-      function playFullSentenceArabic() {
-        playAudio(`learning_data/audio/sentences/ar/${currentSentenceKey.padStart(4, '0')}.mp3`);
-        currentState = State.PLAYING_AR_SENTENCE;
-        lastPlayedState = State.PLAYING_AR_SENTENCE;
-      }
-
-      function playFullSentenceEnglish() {
-        playAudio(`learning_data/audio/sentences/en/${currentSentenceKey.padStart(4, '0')}.mp3`);
-        currentState = State.PLAYING_EN_SENTENCE;
-        lastPlayedState = State.PLAYING_EN_SENTENCE;
-        addLog(`State changed to PLAYING_EN_SENTENCE for sentence ${currentSentenceKey}`);
+      function playEnglish() {
+        document.getElementById('currentWord').innerText = current.en;
+        currentState = State.WAITING_RATING;
+        playAudio(`${DATA_DIR}/audio/${current.id}_en.mp3`, () => {});
       }
 
       function handleRating(isCorrect) {
-        addLog(`Handling rating: ${isCorrect ? 'correct' : 'incorrect'}, current state: ${currentState}`);
-        playFeedbackSound(isCorrect);
-        // Set appropriate feedback state
-        if (currentState === State.WAITING_WORD_RATING) {
-          currentState = State.PLAYING_WORD_FEEDBACK;
-        } else if (currentState === State.WAITING_SENTENCE_RATING) {
-          currentState = State.PLAYING_SENTENCE_FEEDBACK;
+        if (currentAudio) {
+          currentAudio.onended = null;
+          currentAudio.pause();
         }
-        addLog(`State changed to ${currentState} while playing feedback`);
-        
-        // Wait for feedback sound to finish before moving on
-        if (feedbackAudio) {
-          feedbackAudio.onended = () => {
-            addLog(`Feedback sound finished, current state: ${currentState}`);
-            if (currentState === State.PLAYING_WORD_FEEDBACK) {
-              currentWordIndex++;
-              playCurrentWordArabic();
-            } else if (currentState === State.PLAYING_SENTENCE_FEEDBACK) {
-              selectNewRandomSentence();
-            }
-          };
-        }
+        logButtonPress(`Sentence ${current.id} rated as ${isCorrect ? 'correct' : 'incorrect'}`);
+        if (isCorrect) recordLearnedSentence(current.id);
+        currentState = State.PLAYING_FEEDBACK;
+        playFeedbackTone(isCorrect, selectNewRandomSentence);
       }
 
       function handleButtonPress(message) {
-        // Don't process "Both Buttons Pressed" messages
-        if (message === "Both Buttons Pressed") {
+        if (message !== 'Button 1 Pressed' && message !== 'Button 2 Pressed') return;
+        const isButton1 = message === 'Button 1 Pressed';
+        addLog(`${message}, state: ${currentState}`);
+
+        if (isProcessingButton) {
+          addLog('Ignoring button press - still processing previous press');
           return;
         }
-        
-        if (message === "Button 1 Pressed" || message === "Button 2 Pressed") {
-          addLog(`Button pressed: ${message}, Current state: ${currentState}, Last played state: ${lastPlayedState}`);
-          
-          // Prevent double-processing of button presses
-          if (isProcessingButton) {
-            addLog('Ignoring button press - still processing previous press');
-            return;
-          }
-          isProcessingButton = true;
+        if (Date.now() - lastPlayTime < DEBOUNCE_TIME) {
+          addLog('Ignoring button press - too soon since last play');
+          return;
+        }
+        isProcessingButton = true;
+        setTimeout(() => { isProcessingButton = false; }, DEBOUNCE_TIME);
 
-          // Check if enough time has passed since last play
-          const now = Date.now();
-          if (now - lastPlayTime < DEBOUNCE_TIME) {
-            addLog(`Ignoring button press - too soon since last play (${now - lastPlayTime}ms)`);
-            isProcessingButton = false;
-            return;
-          }
-
-          // Process the button press based on current state
-          if (currentState === State.WAITING_WORD_RATING || currentState === State.WAITING_SENTENCE_RATING) {
-            addLog(`Processing rating button press in state: ${currentState}`);
-            // Handle rating
-            const isCorrect = message === "Button 1 Pressed";
-            const context = currentState === State.WAITING_WORD_RATING ? 
-              `Word "${currentWords[currentWordIndex]}" rated as ${isCorrect ? "correct" : "incorrect"}` :
-              `Sentence ${currentSentenceKey} rated as ${isCorrect ? "correct" : "incorrect"}`;
-            logButtonPress(context);
-            handleRating(isCorrect);
-          } else if (currentWordIndex < currentWords.length) {
-            // We're still in word mode
-            if (lastPlayedState === State.PLAYING_AR_WORD || currentState === State.PLAYING_AR_WORD) {
-              // If we just played Arabic or are currently playing Arabic
-              if (message === "Button 1 Pressed") {
-                // Button 0: repeat Arabic
-                playCurrentWordArabic();
-                logButtonPress(`Word "${currentWords[currentWordIndex]}" repeated in Arabic`);
-              } else {
-                // Button 1: play English
-                playCurrentWordEnglish();
-                logButtonPress(`Word "${currentWords[currentWordIndex]}" played in English`);
-                currentState = State.WAITING_WORD_RATING;
-                addLog(`State changed to WAITING_WORD_RATING after English word`);
-              }
-            } else if (currentState === State.PLAYING_EN_WORD) {
-              // If English is currently playing, interrupt it and handle rating
-              const isCorrect = message === "Button 1 Pressed";
-              const context = `Word "${currentWords[currentWordIndex]}" rated as ${isCorrect ? "correct" : "incorrect"}`;
-              logButtonPress(context);
-              handleRating(isCorrect);
+        switch (currentState) {
+          case State.PLAYING_IT:
+          case State.IT_DONE:
+            if (isButton1) {
+              logButtonPress(`Sentence ${current.id} repeated in Italian`);
+              playItalian();
+            } else {
+              logButtonPress(`Sentence ${current.id} played in English`);
+              playEnglish();
             }
-          } else {
-            // We're in sentence mode
-            if (lastPlayedState === State.PLAYING_AR_SENTENCE || currentState === State.PLAYING_AR_SENTENCE) {
-              // If we just played Arabic sentence or are currently playing Arabic sentence
-              if (message === "Button 1 Pressed") {
-                // Button 0: repeat Arabic sentence
-                playFullSentenceArabic();
-                logButtonPress(`Sentence ${currentSentenceKey} repeated in Arabic`);
-              } else {
-                // Button 1: play English sentence
-                playFullSentenceEnglish();
-                logButtonPress(`Sentence ${currentSentenceKey} played in English`);
-                currentState = State.WAITING_SENTENCE_RATING;
-                addLog(`State changed to WAITING_SENTENCE_RATING after English sentence`);
-              }
-            } else if (currentState === State.PLAYING_EN_SENTENCE) {
-              // If English sentence is currently playing, interrupt it and handle rating
-              const isCorrect = message === "Button 1 Pressed";
-              const context = `Sentence ${currentSentenceKey} rated as ${isCorrect ? "correct" : "incorrect"}`;
-              logButtonPress(context);
-              handleRating(isCorrect);
-            }
-          }
-
-          // Reset the processing flag after a short delay
-          setTimeout(() => {
-            isProcessingButton = false;
-            addLog('Button processing flag reset');
-          }, DEBOUNCE_TIME);
+            break;
+          case State.WAITING_RATING:
+            handleRating(isButton1);
+            break;
+          case State.IDLE:
+            selectNewRandomSentence();
+            break;
+          // PLAYING_FEEDBACK: ignore
         }
       }
 

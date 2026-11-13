@@ -1,8 +1,8 @@
 {
   "name": "com.example.hello",
-  "displayName": "Arabic Sentences",
+  "displayName": "Italian Sentences",
   "version": "1.0.1",
-  "description": "Learn Arabic with audio sentences.",
+  "description": "Learn Italian with audio sentences.",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"

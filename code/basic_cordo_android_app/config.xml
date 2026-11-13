@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <widget id="com.koljapluemer.arabicaudio" version="1.0.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
-    <name>Arabic Audio Sentences</name>
-    <description>Practice Arabic with audio SR.</description>
+    <name>Italian Audio Sentences</name>
+    <description>Practice Italian with audio SR.</description>
     <author href="https://koljapluemer.com">
        Kolja Sam
     </author>

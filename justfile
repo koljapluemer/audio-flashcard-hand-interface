@@ -36,8 +36,12 @@ flash-zero-monitor: flash-zero monitor
 apk-doctor:
     cd "{{app}}" && npm install && {{cordova}} requirements android
 
+# Copy data/italian-english-sentences into the app's www/ folder
+app-data:
+    python3 "{{app}}/build_italian_data.py"
+
 # Build the debug APK and open its folder in the file manager
-apk:
+apk: app-data
     cd "{{app}}" && npm install && {{cordova}} prepare android && {{cordova}} build android
     @echo "APK: {{justfile_directory()}}/{{apk_dir}}/app-debug.apk"
     xdg-open "{{apk_dir}}" >/dev/null 2>&1 &
@@ -47,5 +51,5 @@ apk-shell:
     cd "{{apk_dir}}" && exec "${SHELL:-bash}"
 
 # Build + install + launch the app on a USB-connected phone
-apk-run:
+apk-run: app-data
     cd "{{app}}" && npm install && {{cordova}} prepare android && {{cordova}} run android --device
